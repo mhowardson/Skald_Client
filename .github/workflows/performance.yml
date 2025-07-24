@@ -1,0 +1,140 @@
+name: Performance Budget Check
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main]
+
+jobs:
+  performance-budget:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      working-directory: ./apps/web
+      run: npm ci
+    
+    - name: Install API dependencies
+      working-directory: ./apps/api
+      run: npm ci
+    
+    - name: Build application
+      working-directory: ./apps/web
+      run: npm run build
+    
+    - name: Start API server
+      working-directory: ./apps/api
+      run: |
+        npm run dev &
+        npx wait-on http://localhost:3000/health
+    
+    - name: Start web server
+      working-directory: ./apps/web
+      run: |
+        npm run dev &
+        npx wait-on http://localhost:5173
+    
+    - name: Install Playwright browsers
+      working-directory: ./apps/web
+      run: npx playwright install --with-deps
+    
+    - name: Run Lighthouse Performance Tests
+      working-directory: ./apps/web
+      run: npx lhci autorun
+    
+    - name: Run Performance Budget Tests
+      working-directory: ./apps/web
+      run: npm run test:performance:budget
+    
+    - name: Run API Performance Benchmarks
+      working-directory: ./apps/web
+      run: npm run test:performance:api
+    
+    - name: Generate Performance Report
+      working-directory: ./apps/web
+      run: npm run test:performance:report
+      continue-on-error: true
+    
+    - name: Upload Performance Results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: performance-results
+        path: |
+          apps/web/lighthouse-results/
+          apps/web/test-results/
+          apps/web/performance-budget-report.md
+    
+    - name: Comment PR with results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const reportPath = path.join('./apps/web', 'performance-budget-report.md');
+          
+          if (fs.existsSync(reportPath)) {
+            const report = fs.readFileSync(reportPath, 'utf8');
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 📊 Performance Budget Report\n\n${report}`
+            });
+          }
+
+  load-testing:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      working-directory: ./apps/web
+      run: npm ci
+    
+    - name: Install API dependencies
+      working-directory: ./apps/api
+      run: npm ci
+    
+    - name: Start API server
+      working-directory: ./apps/api
+      run: |
+        npm run dev &
+        npx wait-on http://localhost:3000/health
+    
+    - name: Start web server
+      working-directory: ./apps/web
+      run: |
+        npm run dev &
+        npx wait-on http://localhost:5173
+    
+    - name: Run Load Tests
+      working-directory: ./apps/web
+      run: npm run test:performance:load
+      timeout-minutes: 15
+    
+    - name: Upload Load Test Results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: load-test-results
+        path: apps/web/artillery-results/
